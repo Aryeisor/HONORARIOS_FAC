@@ -1,0 +1,15 @@
+{
+  "ortopedia": {
+    "payment_pct": 0.70
+  },
+  "urologia": {
+    "payment_pct": 0.90
+  },
+  "cardiologia": {
+    "consulta_pct": 0.90,
+    "procedimiento_pct": 0.36
+  },
+  "gastroenterologia": {
+    "payment_pct": 0.70
+  }
+}
