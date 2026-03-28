@@ -9,7 +9,12 @@ from honorarios_app.core.excel_utils import (
     validate_required_sheets,
 )
 from honorarios_app.core.models import ProcessResult
-from honorarios_app.core.output_writer import add_totals_row, autofit_columns, style_header
+from honorarios_app.core.output_writer import (
+    add_pedir_fact_summary_box,
+    add_pre_summary_box,
+    autofit_columns,
+    style_header,
+)
 from honorarios_app.services.specialty_factory import get_specialty
 
 
@@ -115,6 +120,8 @@ def process_excel(
                 idx_vlr_aut = i
                 break
 
+    idx_total_coosalud = None
+
     emit("Creando archivo de salida...", 0.22)
     out = Workbook()
     ws_pre = out.active
@@ -137,6 +144,11 @@ def process_excel(
         calc_headers = specialty.get_calc_headers(payment_cfg=payment_cfg)
     else:
         calc_headers = specialty.get_calc_headers(payment_pct=payment_cfg.get("payment_pct"))
+
+    try:
+        idx_total_coosalud = len(base_headers) + calc_headers.index("TOTAL COOSALUD") + 1
+    except ValueError:
+        idx_total_coosalud = None
 
     ws_pre.append(base_headers + calc_headers)
     ws_amar.append(base_headers + ["RAZON EXCLUSION"])
@@ -228,11 +240,14 @@ def process_excel(
 
         row_result = specialty.process_row(**row_kwargs)
 
-        pre_row = values + row_result["calc_values"]
+        pre_values = list(values)
         pedir_values = list(values)
 
         if row_result.get("nuevo_vlr_aut") is not None and idx_vlr_aut is not None:
+            pre_values[idx_vlr_aut - 1] = row_result["nuevo_vlr_aut"]
             pedir_values[idx_vlr_aut - 1] = row_result["nuevo_vlr_aut"]
+
+        pre_row = pre_values + row_result["calc_values"]
 
         if row_result.get("is_coo_proced"):
             pre_rows_coo.append(pre_row)
@@ -249,8 +264,19 @@ def process_excel(
     for row in pedir_rows_coo + pedir_rows_other:
         ws_pedir.append(row)
 
-    add_totals_row(ws_pre, start_row=2, idx_saldo=idx_saldo, idx_vlr_aut=idx_vlr_aut)
-    add_totals_row(ws_pedir, start_row=2, idx_saldo=idx_saldo, idx_vlr_aut=idx_vlr_aut)
+    add_pre_summary_box(
+        ws_pre,
+        start_row=2,
+        idx_saldo=idx_saldo,
+        idx_vlr_aut=idx_vlr_aut,
+        idx_total_coosalud=idx_total_coosalud,
+    )
+    add_pedir_fact_summary_box(
+        ws_pedir,
+        start_row=2,
+        idx_vlr_aut=idx_vlr_aut,
+        anchor_col=(idx_saldo - 1) if idx_saldo else None,
+    )
 
     all_sheets = [ws_pre, ws_amar, ws_pedir, ws_anul] + list(extra_sheets.values())
 

@@ -11,30 +11,28 @@ from honorarios_app.specialties.base import SpecialtyBase
 
 
 class UrologiaRules(SpecialtyBase):
-    name = "urologia"
+    contratos_aplican = {"COOSALUD00225", "COOSALUD00125"}
+    consulta_re = re.compile(r"\b(CONSULTA|INTERCONSULTA)\b", re.I)
+    cuidados_re = re.compile(r"\bCUIDADOS\b", re.I)
     default_payment_pct = 0.90
 
-    contratos_aplican = {"COOSALUD00225", "COOSALUD00125"}
-
-    consulta_re = re.compile(r"\b(CONSULTA|INTERCONSULTA)\b", re.IGNORECASE)
-    cuidados_re = re.compile(r"\bCUIDAD(O|OS)?\b", re.IGNORECASE)
-
     def get_calc_headers(self, payment_pct=None):
-        payment_pct = payment_pct if payment_pct is not None else self.default_payment_pct
-        pct_label = int(round(payment_pct * 100))
+        p = payment_pct if payment_pct is not None else self.default_payment_pct
+        pct_txt = f"{int(round(p * 100))}% CLINICA"
 
         return [
-            "ROL (HOSVI)",
-            "PORCENTAJE PAGO (HOSVI/OVERRIDE)",
-            "100% CIRUJANO COOSALUD",
-            "100% AYUD.2 COOSALUD",
+            "ROL HOSVI",
+            "% HOSVI",
+            "VALOR CIRUJANO COOSALUD",
+            "VALOR AYUDANTE 2 COOSALUD",
             "100% COOPSA",
             "75% COOPSA",
+            "70% COOPSA",
             "60% COOPSA",
             "50% COOPSA",
             "TOTAL COOSALUD",
-            f"{pct_label}% CLINICA",
-            "DIF. HOSVI Y COOSALUD",
+            pct_txt,
+            "DIF SALDO-COOSALUD",
             "OBS",
         ]
 
@@ -216,7 +214,7 @@ class UrologiaRules(SpecialtyBase):
         return 0.0
 
     def _calculate_distribution(self, base_val, pct):
-        b100 = b75 = b60 = b50 = 0.0
+        b100 = b75 = b70 = b60 = b50 = 0.0
         obs = ""
 
         if base_val != 0.0 and pct is not None:
@@ -233,6 +231,8 @@ class UrologiaRules(SpecialtyBase):
                     b100 = fact
                 elif abs(pct - 0.75) < 1e-9:
                     b75 = fact
+                elif abs(pct - 0.70) < 1e-9:
+                    b70 = fact
                 elif abs(pct - 0.60) < 1e-9:
                     b60 = fact
                 elif abs(pct - 0.50) < 1e-9:
@@ -240,8 +240,8 @@ class UrologiaRules(SpecialtyBase):
                 else:
                     obs = f"Porcentaje no esperado: {pct}"
 
-        total = b100 + b75 + b60 + b50
-        return b100, b75, b60, b50, total, obs
+        total = b100 + b75 + b70 + b60 + b50
+        return b100, b75, b70, b60, b50, total, obs
 
     def _calculate_clinic_value(self, total, payment_pct):
         return total * payment_pct
@@ -277,7 +277,7 @@ class UrologiaRules(SpecialtyBase):
         pct = None
         v_cir = 0.0
         v_ayd2 = 0.0
-        b100 = b75 = b60 = b50 = 0.0
+        b100 = b75 = b70 = b60 = b50 = 0.0
         total = 0.0
         valor_clinica = 0.0
         diff = 0.0
@@ -313,7 +313,7 @@ class UrologiaRules(SpecialtyBase):
                 obs = (obs + " | " if obs else "") + "Sin porcentaje (HOSVI / override)"
 
             if base_val != 0.0 and pct is not None:
-                b100, b75, b60, b50, total, obs_pct = self._calculate_distribution(base_val, pct)
+                b100, b75, b70, b60, b50, total, obs_pct = self._calculate_distribution(base_val, pct)
                 if obs_pct:
                     obs = (obs + " | " if obs else "") + obs_pct
 
@@ -327,6 +327,7 @@ class UrologiaRules(SpecialtyBase):
             v_ayd2,
             b100,
             b75,
+            b70,
             b60,
             b50,
             total,
