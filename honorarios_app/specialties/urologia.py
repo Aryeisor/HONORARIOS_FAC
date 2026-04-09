@@ -13,7 +13,7 @@ from honorarios_app.specialties.base import SpecialtyBase
 class UrologiaRules(SpecialtyBase):
     contratos_aplican = {"COOSALUD00225", "COOSALUD00125"}
     consulta_re = re.compile(r"\b(CONSULTA|INTERCONSULTA)\b", re.I)
-    cuidados_re = re.compile(r"\bCUIDADOS\b", re.I)
+    cuidados_re = re.compile(r"\bCUIDAD(?:O|OS)?\b", re.I)
     default_payment_pct = 0.90
 
     def get_calc_headers(self, payment_pct=None):

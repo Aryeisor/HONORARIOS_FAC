@@ -116,7 +116,7 @@ class OrtopediaRules(SpecialtyBase):
         proc_upper = norm(proc_text)
 
         is_consulta = "CONSULTA" in proc_upper or "INTERCONSULTA" in proc_upper
-        is_cuidados = "CUIDADOS" in proc_upper
+        is_cuidados = "CUIDAD" in proc_upper
 
         return is_aplica and (not is_consulta) and (not is_cuidados), is_consulta, is_cuidados
 

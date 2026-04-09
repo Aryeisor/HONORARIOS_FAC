@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Ejecutables
+*.exe
+
+# Otros
+*.toc
+*.pkg
+*.pyz
+base_library.zip
