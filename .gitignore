@@ -10,6 +10,24 @@ dist/
 # Ejecutables
 *.exe
 
+# Carpetas generadas por la app
+output/
+tmp/
+
+# Empaquetados / comprimidos
+*.zip
+
+# Datos sensibles (evita comitear planillas con datos reales en la raiz)
+/*.xlsx
+/*.xls
+
+# Logs
+*.log
+
+# Configuracion local de IDEs
+.vscode/
+.idea/
+
 # Otros
 *.toc
 *.pkg

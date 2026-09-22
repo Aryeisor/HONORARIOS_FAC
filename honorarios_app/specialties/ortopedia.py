@@ -1,3 +1,6 @@
+import re
+from datetime import date, datetime
+
 from honorarios_app.core.common import (
     get_col,
     norm,
@@ -11,6 +14,9 @@ from honorarios_app.specialties.base import SpecialtyBase
 class OrtopediaRules(SpecialtyBase):
     contratos_aplican = {"COOSALUD00225", "COOSALUD00125"}
     default_payment_pct = 0.70
+
+    consulta_re = re.compile(r"\b(CONSULTA|INTERCONSULTA)\b", re.IGNORECASE)
+    cuidados_re = re.compile(r"\bCUIDAD(O|OS)?\b", re.IGNORECASE)
 
     def get_calc_headers(self, payment_pct=None):
         p = payment_pct if payment_pct is not None else self.default_payment_pct
@@ -32,19 +38,118 @@ class OrtopediaRules(SpecialtyBase):
             "OBS",
         ]
 
+    def get_extra_sheets(self):
+        return {
+            "DUPLICADOS": "RAZON DUPLICADO",
+        }
+
+    def filter_duplicate_consult_rows(
+        self,
+        pre_rows_coo,
+        pre_rows_other,
+        pedir_rows_coo,
+        pedir_rows_other,
+        base_headers,
+    ):
+        pre_col_map = {
+            norm(header): column
+            for column, header in enumerate(base_headers, start=1)
+            if norm(header)
+        }
+        col_id_pac = get_col(
+            pre_col_map,
+            "IDENTIFICACION PACIENTE",
+            "IDENTIFICACION_PACIENTE",
+            "ID PACIENTE",
+            "DOC PACIENTE",
+            "DOCUMENTO PACIENTE",
+            "IDENTIFICACION",
+        )
+        col_fecha = get_col(
+            pre_col_map,
+            "FECHA DEL SERVICIO",
+            "FECHA SERVICIO",
+            "FECHA_PROCED",
+            "FECHA PROCED",
+            "FECHA",
+        )
+        col_proc = get_col(pre_col_map, "PROCEDIMIENTO")
+        col_saldo = get_col(pre_col_map, "SALDO")
+
+        if any(c is None for c in [col_id_pac, col_fecha, col_proc, col_saldo]):
+            return (
+                list(pre_rows_coo) + list(pre_rows_other),
+                list(pedir_rows_coo) + list(pedir_rows_other),
+                [],
+            )
+
+        idx_id_pac = col_id_pac - 1
+        idx_fecha = col_fecha - 1
+        idx_proc = col_proc - 1
+        idx_saldo = col_saldo - 1
+
+        def date_key(value):
+            if isinstance(value, datetime):
+                return value.date().isoformat()
+            if isinstance(value, date):
+                return value.isoformat()
+            if value is None:
+                return ""
+            return str(value).strip().split("T", 1)[0].split(" ", 1)[0]
+
+        pre_rows = list(pre_rows_coo) + list(pre_rows_other)
+        pedir_rows = list(pedir_rows_coo) + list(pedir_rows_other)
+        if len(pre_rows) != len(pedir_rows):
+            raise ValueError("Las filas PRE y PEDIR FACT no estan sincronizadas")
+
+        groups = {}
+        for row_index, row in enumerate(pre_rows):
+            procedimiento = norm(row[idx_proc])
+            if not (
+                self.consulta_re.search(procedimiento)
+                or self.cuidados_re.search(procedimiento)
+            ):
+                continue
+
+            paciente = normalize_fac(row[idx_id_pac])
+            fecha = date_key(row[idx_fecha])
+            if not paciente or not fecha:
+                continue
+
+            groups.setdefault((paciente, fecha), []).append(row_index)
+
+        duplicate_indexes = set()
+        for row_indexes in groups.values():
+            if len(row_indexes) < 2:
+                continue
+            row_to_keep = max(
+                row_indexes,
+                key=lambda row_index: to_number(pre_rows[row_index][idx_saldo]),
+            )
+            duplicate_indexes.update(
+                row_index for row_index in row_indexes if row_index != row_to_keep
+            )
+
+        reason = "CONSULTA DUPLICADA MISMO PACIENTE Y FECHA"
+        final_rows = [
+            row for row_index, row in enumerate(pre_rows)
+            if row_index not in duplicate_indexes
+        ]
+        final_pedir_rows = [
+            row for row_index, row in enumerate(pedir_rows)
+            if row_index not in duplicate_indexes
+        ]
+        duplicate_rows = [
+            pre_rows[row_index][:len(base_headers)] + [reason]
+            for row_index in range(len(pre_rows))
+            if row_index in duplicate_indexes
+        ]
+        return final_rows, final_pedir_rows, duplicate_rows
+
     def detect_anulable_rows(self, ws_original, header_row, col_map):
         col_no_fac = get_col(col_map, "NO FAC", "NUM FAC", "N° FAC", "FACTURA")
-        col_cod_proc = get_col(
-            col_map,
-            "CODIGO PROCEDIMIENTO",
-            "COD PROCEDIMIENTO",
-            "CODIGO PROC",
-            "COD_PROCED",
-            "COD",
-        )
         col_proc = get_col(col_map, "PROCEDIMIENTO")
         col_saldo = get_col(col_map, "SALDO")
-        col_estado = get_col(col_map, "ESTADO")
         col_id_pac = get_col(
             col_map,
             "IDENTIFICACION PACIENTE",
@@ -54,60 +159,71 @@ class OrtopediaRules(SpecialtyBase):
             "DOCUMENTO PACIENTE",
             "IDENTIFICACION",
         )
-        col_fecha_serv = get_col(
-            col_map,
-            "FECHA DEL SERVICIO",
-            "FECHA SERVICIO",
-            "FECHA_PROCED",
-            "FECHA PROCED",
-            "FECHA",
-        )
 
         anulable_rows = set()
 
-        if None in [col_no_fac, col_cod_proc, col_proc, col_saldo, col_estado]:
-            return anulable_rows
+        if all(c is not None for c in [col_no_fac, col_proc, col_saldo, col_id_pac]):
+            groups = {}
 
-        groups = {}
+            for r in range(header_row + 1, ws_original.max_row + 1):
+                no_fac_val = ws_original.cell(r, col_no_fac).value
+                proc_val = ws_original.cell(r, col_proc).value
+                id_pac_val = ws_original.cell(r, col_id_pac).value
+                saldo_val = ws_original.cell(r, col_saldo).value
 
-        for r in range(header_row + 1, ws_original.max_row + 1):
-            no_fac_val = ws_original.cell(r, col_no_fac).value
-            cod_proc_val = ws_original.cell(r, col_cod_proc).value
-            proc_val = ws_original.cell(r, col_proc).value
-            saldo_val = ws_original.cell(r, col_saldo).value
-            estado_val = ws_original.cell(r, col_estado).value
-            id_pac_val = ws_original.cell(r, col_id_pac).value if col_id_pac else ""
-            fecha_val = ws_original.cell(r, col_fecha_serv).value if col_fecha_serv else ""
+                key = (
+                    normalize_fac(no_fac_val),
+                    normalize_fac(id_pac_val),
+                    norm(proc_val),
+                )
 
-            key = (
-                normalize_fac(no_fac_val),
-                normalize_fac(id_pac_val),
-                normalize_fac(cod_proc_val),
-                norm(proc_val),
-                normalize_datetime_key(fecha_val),
-            )
+                if not any(key):
+                    continue
 
-            groups.setdefault(key, []).append(
-                {
+                groups.setdefault(key, []).append({
                     "row": r,
                     "saldo": to_number(saldo_val),
-                    "estado": norm(estado_val),
-                }
-            )
+                })
 
-        for _, items in groups.items():
-            if len(items) < 2:
-                continue
+            for items in groups.values():
+                if len(items) < 2:
+                    continue
 
-            saldo_sum = sum(it["saldo"] for it in items)
-            estados = {it["estado"] for it in items if it["estado"]}
+                saldo_sum = sum(it["saldo"] for it in items)
+                if abs(saldo_sum) < 0.01:
+                    for it in items:
+                        anulable_rows.add(it["row"])
 
-            has_anulado = any("ANUL" in e for e in estados)
-            has_base = any("ANUL" not in e for e in estados) if estados else True
+            groups_without_fac = {}
+            for r in range(header_row + 1, ws_original.max_row + 1):
+                if r in anulable_rows:
+                    continue
 
-            if has_anulado and has_base and abs(saldo_sum) < 0.01:
-                for it in items:
-                    anulable_rows.add(it["row"])
+                proc_val = ws_original.cell(r, col_proc).value
+                id_pac_val = ws_original.cell(r, col_id_pac).value
+                saldo_val = ws_original.cell(r, col_saldo).value
+
+                key = (
+                    normalize_fac(id_pac_val),
+                    norm(proc_val),
+                )
+
+                if not all(key):
+                    continue
+
+                groups_without_fac.setdefault(key, []).append({
+                    "row": r,
+                    "saldo": to_number(saldo_val),
+                })
+
+            for items in groups_without_fac.values():
+                if len(items) < 2:
+                    continue
+
+                saldo_sum = sum(it["saldo"] for it in items)
+                if abs(saldo_sum) < 0.01:
+                    for it in items:
+                        anulable_rows.add(it["row"])
 
         return anulable_rows
 
@@ -115,7 +231,15 @@ class OrtopediaRules(SpecialtyBase):
         is_aplica = contrato in self.contratos_aplican
         proc_upper = norm(proc_text)
 
-        is_consulta = "CONSULTA" in proc_upper or "INTERCONSULTA" in proc_upper
+        non_procedure_markers = [
+            "CONSULTA",
+            "INTERCONSULTA",
+            "CUIDAD",
+            "JUNTA MEDICA",
+            "EQUIPO INTERDISCIPLINARIO",
+        ]
+
+        is_consulta = any(marker in proc_upper for marker in non_procedure_markers)
         is_cuidados = "CUIDAD" in proc_upper
 
         return is_aplica and (not is_consulta) and (not is_cuidados), is_consulta, is_cuidados
@@ -258,6 +382,7 @@ class OrtopediaRules(SpecialtyBase):
         diff = 0.0
 
         obs = "NO APLICA ORTOPEDIA"
+
         if contrato in self.contratos_aplican and (is_consulta or is_cuidados):
             obs = "ORTOPEDIA (consulta/cuidados) - sin cálculo"
 

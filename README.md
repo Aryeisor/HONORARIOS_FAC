@@ -37,7 +37,7 @@ Incluye lógica avanzada para:
 - Ortopedia  
 - Urología  
 - Cardiología  
-- Gastroenterología  
+- Fonoaudiología  
 
 ---
 

@@ -37,6 +37,11 @@ def process_excel(
                 pass
 
     specialty = get_specialty(especialidad)
+    requires_hosvireport = getattr(
+        specialty,
+        "requires_hosvireport",
+        especialidad != "cardiologia",
+    )
 
     # Configuración de porcentajes
     if payment_cfg is None:
@@ -57,7 +62,7 @@ def process_excel(
     ws_original = wb[original_sheet] if original_sheet else wb[wb.sheetnames[0]]
 
     # Hojas obligatorias
-    if especialidad != "cardiologia":
+    if requires_hosvireport:
         if hosvi_sheet not in wb.sheetnames:
             raise RuntimeError(f"No existe la hoja '{hosvi_sheet}' en el archivo.")
 
@@ -71,7 +76,7 @@ def process_excel(
     hosvi_by_fact = {}
     hosvi_by_alt = {}
 
-    if especialidad != "cardiologia":
+    if requires_hosvireport:
         emit("Leyendo HOSVIREPORT...", 0.14)
         hosvi_by_fact, hosvi_by_alt = build_hosvireport(wb[hosvi_sheet], pct_override=pct_override)
 
@@ -99,6 +104,23 @@ def process_excel(
     col_proc = get_col(col_map, "PROCEDIMIENTO")
     col_saldo = get_col(col_map, "SALDO")
     col_estado = get_col(col_map, "ESTADO")
+    col_tipo_fac = get_col(col_map, "TIPO FAC", "TIPO_FAC", "TIPO FACTURA")
+    col_id_paciente = get_col(
+        col_map,
+        "IDENTIFICACION PACIENTE",
+        "IDENTIFICACION_PACIENTE",
+        "ID PACIENTE",
+        "DOC PACIENTE",
+        "DOCUMENTO PACIENTE",
+        "IDENTIFICACION",
+    )
+    col_nombre_paciente = get_col(
+        col_map,
+        "NOMBRE PACIENTE",
+        "NOMBRE_PACIENTE",
+        "NOMBRE P.",
+        "PACIENTE",
+    )
 
     if any(c is None for c in [col_no_fac, col_contrato, col_cod_proc]):
         raise RuntimeError(
@@ -166,6 +188,11 @@ def process_excel(
     duplicate_rows = {}
     if hasattr(specialty, "detect_duplicate_rows"):
         duplicate_rows = specialty.detect_duplicate_rows(ws_original, header_row, col_map)
+        duplicate_rows = {
+            row: reason
+            for row, reason in duplicate_rows.items()
+            if row not in anulable_rows
+        }
 
     pre_rows_coo = []
     pre_rows_other = []
@@ -200,6 +227,9 @@ def process_excel(
         cod_proc_val = ws_original.cell(r, col_cod_proc).value
         proc_val = ws_original.cell(r, col_proc).value if col_proc else ""
         saldo_val = ws_original.cell(r, col_saldo).value if col_saldo else 0.0
+        tipo_fac_val = ws_original.cell(r, col_tipo_fac).value if col_tipo_fac else ""
+        id_paciente_val = ws_original.cell(r, col_id_paciente).value if col_id_paciente else ""
+        nombre_paciente_val = ws_original.cell(r, col_nombre_paciente).value if col_nombre_paciente else ""
 
         # Saltar filas de totales o resumen del archivo original
         if (
@@ -210,7 +240,14 @@ def process_excel(
         ):
             continue
 
-        ok, reason = specialty.apply_common_exclusion_rules(no_fac_val, contrato_val, cod_proc_val)
+        ok, reason = specialty.apply_common_exclusion_rules(
+            no_fac_val,
+            contrato_val,
+            cod_proc_val,
+            tipo_fac_value=tipo_fac_val,
+            id_paciente_value=id_paciente_val,
+            nombre_paciente_value=nombre_paciente_val,
+        )
         if not ok:
             ws_amar.append(values + [reason])
             continue
@@ -258,10 +295,31 @@ def process_excel(
 
     emit("Escribiendo hojas y totales...", 0.88)
 
-    for row in pre_rows_coo + pre_rows_other:
+    pre_rows_final = pre_rows_coo + pre_rows_other
+    pedir_rows_final = pedir_rows_coo + pedir_rows_other
+    duplicate_pre_rows = []
+    if hasattr(specialty, "filter_duplicate_consult_rows"):
+        (
+            pre_rows_final,
+            pedir_rows_final,
+            duplicate_pre_rows,
+        ) = specialty.filter_duplicate_consult_rows(
+            pre_rows_coo=pre_rows_coo,
+            pre_rows_other=pre_rows_other,
+            pedir_rows_coo=pedir_rows_coo,
+            pedir_rows_other=pedir_rows_other,
+            base_headers=base_headers,
+        )
+
+    for row in pre_rows_final:
         ws_pre.append(row)
 
-    for row in pedir_rows_coo + pedir_rows_other:
+    ws_duplicates = extra_sheets.get("DUPLICADOS")
+    if ws_duplicates is not None:
+        for row in duplicate_pre_rows:
+            ws_duplicates.append(row)
+
+    for row in pedir_rows_final:
         ws_pedir.append(row)
 
     add_pre_summary_box(

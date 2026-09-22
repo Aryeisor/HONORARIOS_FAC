@@ -1,7 +1,7 @@
 from honorarios_app.specialties.cardiologia import CardiologiaRules
 from honorarios_app.specialties.ortopedia import OrtopediaRules
 from honorarios_app.specialties.urologia import UrologiaRules
-from honorarios_app.specialties.gastroenterologia import GastroenterologiaRules
+from honorarios_app.specialties.fonoaudiologia import FonoaudiologiaRules
 
 
 def get_specialty(name: str):
@@ -11,7 +11,7 @@ def get_specialty(name: str):
         "ortopedia": OrtopediaRules,
         "urologia": UrologiaRules,
         "cardiologia": CardiologiaRules,
-        "gastroenterologia": GastroenterologiaRules,
+        "fonoaudiologia": FonoaudiologiaRules,
     }
 
     if name not in specialties:

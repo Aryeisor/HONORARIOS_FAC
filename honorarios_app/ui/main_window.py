@@ -18,8 +18,13 @@ class MainWindow:
         self.root = root
         self.root.title(APP_TITLE)
         self.root.geometry("1360x810")
-        self.root.minsize(1220, 760)
+        self.root.minsize(1000, 620)
         self.root.configure(bg="#EEF7F5")
+
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            pass
 
         self.input_var = tk.StringVar()
         self.output_var = tk.StringVar()
@@ -27,7 +32,7 @@ class MainWindow:
         self.status_var = tk.StringVar(value="Listo para procesar.")
         self.progress_var = tk.DoubleVar(value=0)
 
-        # Ortopedia / Urología / Gastroenterología
+        # Ortopedia / Urología / Fonoaudiología
         self.base_pct_var = tk.StringVar(value="70")
         self.update_pct_var = tk.StringVar(value="70")
 
@@ -41,11 +46,20 @@ class MainWindow:
         self.is_processing = False
         self.last_result = None
 
+        self.main_canvas = None
+        self.scrollable_frame = None
+        self.canvas_window = None
+        self.content = None
+        self.form_card = None
+        self.actions_card = None
+        self.log_card = None
+
         self._configure_styles()
         self._build_ui()
         self._bind_events()
         self._load_specialty_percentage()
         self._toggle_percentage_mode()
+        self._on_root_resize()
 
     def _configure_styles(self):
         style = ttk.Style()
@@ -145,22 +159,96 @@ class MainWindow:
         style.configure("Horizontal.TProgressbar", thickness=16)
 
     def _build_ui(self):
-        main = ttk.Frame(self.root, style="App.TFrame", padding=18)
-        main.pack(fill="both", expand=True)
+        outer = ttk.Frame(self.root, style="App.TFrame")
+        outer.pack(fill="both", expand=True)
 
-        self._build_header(main)
-        self._build_metrics(main)
+        self.main_canvas = tk.Canvas(
+            outer,
+            bg="#EEF7F5",
+            highlightthickness=0,
+            bd=0
+        )
+        self.main_canvas.pack(side="left", fill="both", expand=True)
 
-        content = ttk.Frame(main, style="App.TFrame")
-        content.pack(fill="both", expand=True, pady=(14, 0))
+        self.v_scroll = ttk.Scrollbar(outer, orient="vertical", command=self.main_canvas.yview)
+        self.v_scroll.pack(side="right", fill="y")
 
-        content.columnconfigure(0, weight=3)
-        content.columnconfigure(1, weight=1)
-        content.rowconfigure(1, weight=1)
+        self.main_canvas.configure(yscrollcommand=self.v_scroll.set)
 
-        self._build_form_card(content)
-        self._build_actions_card(content)
-        self._build_log_card(content)
+        self.scrollable_frame = ttk.Frame(self.main_canvas, style="App.TFrame", padding=18)
+        self.canvas_window = self.main_canvas.create_window(
+            (0, 0),
+            window=self.scrollable_frame,
+            anchor="nw"
+        )
+
+        self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
+        self.main_canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self._build_header(self.scrollable_frame)
+        self._build_metrics(self.scrollable_frame)
+
+        self.content = ttk.Frame(self.scrollable_frame, style="App.TFrame")
+        self.content.pack(fill="both", expand=True, pady=(14, 0))
+
+        self.content.columnconfigure(0, weight=3)
+        self.content.columnconfigure(1, weight=1)
+        self.content.rowconfigure(2, weight=1)
+
+        self._build_form_card(self.content)
+        self._build_actions_card(self.content)
+        self._build_log_card(self.content)
+
+        self.root.bind("<Configure>", self._on_root_resize)
+        self._bind_mousewheel()
+
+    def _on_frame_configure(self, event=None):
+        if self.main_canvas is not None:
+            self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        if self.main_canvas is not None and self.canvas_window is not None:
+            self.main_canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _bind_mousewheel(self):
+        def _on_mousewheel(event):
+            if self.main_canvas is not None:
+                self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _on_mousewheel_linux_up(event):
+            if self.main_canvas is not None:
+                self.main_canvas.yview_scroll(-1, "units")
+
+        def _on_mousewheel_linux_down(event):
+            if self.main_canvas is not None:
+                self.main_canvas.yview_scroll(1, "units")
+
+        self.main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.main_canvas.bind_all("<Button-4>", _on_mousewheel_linux_up)
+        self.main_canvas.bind_all("<Button-5>", _on_mousewheel_linux_down)
+
+    def _on_root_resize(self, event=None):
+        if self.content is None or self.form_card is None or self.actions_card is None or self.log_card is None:
+            return
+
+        width = self.root.winfo_width()
+
+        if width < 1280:
+            self.content.columnconfigure(0, weight=1)
+            self.content.columnconfigure(1, weight=0)
+
+            self.form_card.grid_configure(row=0, column=0, padx=(0, 0), pady=(0, 12), sticky="nsew")
+            self.actions_card.grid_configure(row=1, column=0, padx=(0, 0), pady=(0, 12), sticky="ew")
+            self.log_card.grid_configure(row=2, column=0, columnspan=1, pady=(0, 0), sticky="nsew")
+        else:
+            self.content.columnconfigure(0, weight=3)
+            self.content.columnconfigure(1, weight=1)
+
+            self.form_card.grid_configure(row=0, column=0, padx=(0, 12), pady=(0, 0), sticky="nsew")
+            self.actions_card.grid_configure(row=0, column=1, padx=(0, 0), pady=(0, 0), sticky="nsew")
+            self.log_card.grid_configure(row=1, column=0, columnspan=2, pady=(12, 0), sticky="nsew")
+
+        self.root.after_idle(self._on_frame_configure)
 
     def _build_header(self, parent):
         header = ttk.Frame(parent, style="App.TFrame")
@@ -191,8 +279,9 @@ class MainWindow:
         return value_lbl
 
     def _build_form_card(self, parent):
-        card = ttk.Frame(parent, style="White.TFrame", padding=18)
-        card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        self.form_card = ttk.Frame(parent, style="White.TFrame", padding=18)
+        self.form_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        card = self.form_card
 
         card.columnconfigure(1, weight=1)
         card.columnconfigure(2, weight=1)
@@ -209,7 +298,7 @@ class MainWindow:
         self.combo_specialty = ttk.Combobox(
             top_row_frame,
             textvariable=self.specialty_var,
-            values=["ortopedia", "urologia", "cardiologia", "gastroenterologia"],
+            values=["ortopedia", "urologia", "cardiologia", "fonoaudiologia"],
             state="readonly",
             width=22,
         )
@@ -319,8 +408,9 @@ class MainWindow:
         )
 
     def _build_actions_card(self, parent):
-        card = ttk.Frame(parent, style="White.TFrame", padding=18)
-        card.grid(row=0, column=1, sticky="nsew")
+        self.actions_card = ttk.Frame(parent, style="White.TFrame", padding=18)
+        self.actions_card.grid(row=0, column=1, sticky="nsew")
+        card = self.actions_card
 
         ttk.Label(card, text="Soporte y consulta", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
 
@@ -359,8 +449,9 @@ class MainWindow:
         self.btn_copy_summary.pack(fill="x", pady=4)
 
     def _build_log_card(self, parent):
-        card = ttk.Frame(parent, style="White.TFrame", padding=18)
-        card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        self.log_card = ttk.Frame(parent, style="White.TFrame", padding=18)
+        self.log_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        card = self.log_card
 
         card.rowconfigure(1, weight=1)
         card.columnconfigure(0, weight=1)
@@ -383,6 +474,7 @@ class MainWindow:
             fg="#0F172A",
             relief="solid",
             borderwidth=1,
+            height=12,
         )
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
@@ -429,10 +521,10 @@ class MainWindow:
     def _get_required_sheets_for_specialty(self, specialty: str):
         specialty = (specialty or "").strip().lower()
 
-        if specialty in ("ortopedia", "urologia", "gastroenterologia"):
+        if specialty in ("ortopedia", "urologia"):
             return ["COOSALUD", "HOSVIREPORT"]
 
-        if specialty == "cardiologia":
+        if specialty in ("cardiologia", "fonoaudiologia"):
             return ["COOSALUD"]
 
         return []
@@ -513,6 +605,7 @@ class MainWindow:
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
         self.root.update_idletasks()
+        self._on_frame_configure()
 
     def set_status(self, message, percent=None):
         self.status_var.set(message)
@@ -1021,7 +1114,7 @@ class MainWindow:
                 "- Ortopedia\n"
                 "- Urología\n"
                 "- Cardiología\n"
-                "- Gastroenterología\n\n"
+                "- Fonoaudiología\n\n"
                 "Funciones principales del módulo:\n"
                 "- Lectura de archivos Excel\n"
                 "- Validación básica de hojas requeridas\n"
@@ -1046,7 +1139,7 @@ class MainWindow:
                 "- Ortopedia\n"
                 "- Urología\n"
                 "- Cardiología\n"
-                "- Gastroenterología\n\n"
+                "- Fonoaudiología\n\n"
                 "Tecnologías principales:\n"
                 "- Python\n"
                 "- Tkinter\n"

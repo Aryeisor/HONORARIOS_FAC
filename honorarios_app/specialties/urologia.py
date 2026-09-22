@@ -12,7 +12,10 @@ from honorarios_app.specialties.base import SpecialtyBase
 
 class UrologiaRules(SpecialtyBase):
     contratos_aplican = {"COOSALUD00225", "COOSALUD00125"}
-    consulta_re = re.compile(r"\b(CONSULTA|INTERCONSULTA)\b", re.I)
+    consulta_re = re.compile(
+        r"\b(CONSULTA|INTERCONSULTA|JUNTA\s+MEDICA|EQUIPO\s+INTERDISCIPLINARIO)\b",
+        re.I,
+    )
     cuidados_re = re.compile(r"\bCUIDAD(?:O|OS)?\b", re.I)
     default_payment_pct = 0.90
 
@@ -41,7 +44,7 @@ class UrologiaRules(SpecialtyBase):
             "DUPLICADOS": "RAZON DUPLICADO",
         }
 
-    def detect_anulable_rows(self, ws_original, header_row, col_map):
+    def _detect_anulable_rows_legacy(self, ws_original, header_row, col_map):
         col_cod_proc = get_col(col_map, "CODIGO PROCEDIMIENTO", "COD PROCEDIMIENTO", "CODIGO PROC", "COD_PROCED", "COD")
         col_proc = get_col(col_map, "PROCEDIMIENTO")
         col_saldo = get_col(col_map, "SALDO")
@@ -98,7 +101,7 @@ class UrologiaRules(SpecialtyBase):
 
         return anulable_rows
 
-    def detect_duplicate_rows(self, ws_original, header_row, col_map):
+    def _detect_duplicate_rows_legacy(self, ws_original, header_row, col_map):
         col_nombre_pac = (
             get_col(col_map, "NOMBRE DEL PACIENTE")
             or get_col(col_map, "NOMBRE PACIENTE")
@@ -141,6 +144,157 @@ class UrologiaRules(SpecialtyBase):
                 duplicate_rows[r] = "Consulta/interconsulta duplicada en la misma fecha del servicio"
             else:
                 seen[key] = r
+
+        return duplicate_rows
+
+    # Version corregida: prioridad ANULADOS antes que DUPLICADOS.
+    # Esta definicion reemplaza la anterior dentro de la clase sin tocar la
+    # logica de calculo, HOSVIREPORT, tarifas ni porcentajes de Urologia.
+    def detect_anulable_rows(self, ws_original, header_row, col_map):
+        col_no_fac = get_col(col_map, "NO FAC", "NUM FAC", "NÂ° FAC", "FACTURA")
+        col_cod_proc = get_col(col_map, "CODIGO PROCEDIMIENTO", "COD PROCEDIMIENTO", "CODIGO PROC", "COD_PROCED", "COD")
+        col_proc = get_col(col_map, "PROCEDIMIENTO")
+        col_saldo = get_col(col_map, "SALDO")
+        col_id_pac = get_col(
+            col_map,
+            "IDENTIFICACION PACIENTE", "IDENTIFICACION_PACIENTE",
+            "ID PACIENTE", "DOC PACIENTE", "DOCUMENTO PACIENTE", "IDENTIFICACION"
+        )
+
+        anulable_rows = set()
+
+        if all(c is not None for c in [col_no_fac, col_proc, col_saldo, col_id_pac]):
+            groups = {}
+
+            for r in range(header_row + 1, ws_original.max_row + 1):
+                no_fac_val = ws_original.cell(r, col_no_fac).value
+                cod_proc_val = ws_original.cell(r, col_cod_proc).value if col_cod_proc else ""
+                proc_val = ws_original.cell(r, col_proc).value
+                id_pac_val = ws_original.cell(r, col_id_pac).value
+                saldo_val = ws_original.cell(r, col_saldo).value
+
+                key = (
+                    normalize_fac(no_fac_val),
+                    normalize_fac(id_pac_val),
+                    norm(proc_val),
+                    normalize_fac(cod_proc_val) if col_cod_proc else "",
+                )
+
+                if not all(key[:3]):
+                    continue
+
+                groups.setdefault(key, []).append({
+                    "row": r,
+                    "saldo": to_number(saldo_val),
+                })
+
+            for items in groups.values():
+                if len(items) < 2:
+                    continue
+
+                if abs(sum(it["saldo"] for it in items)) < 0.01:
+                    for it in items:
+                        anulable_rows.add(it["row"])
+
+            groups_without_fac = {}
+            for r in range(header_row + 1, ws_original.max_row + 1):
+                if r in anulable_rows:
+                    continue
+
+                cod_proc_val = ws_original.cell(r, col_cod_proc).value if col_cod_proc else ""
+                proc_val = ws_original.cell(r, col_proc).value
+                id_pac_val = ws_original.cell(r, col_id_pac).value
+                saldo_val = ws_original.cell(r, col_saldo).value
+
+                key = (
+                    normalize_fac(id_pac_val),
+                    norm(proc_val),
+                    normalize_fac(cod_proc_val) if col_cod_proc else "",
+                )
+
+                if not all(key[:2]):
+                    continue
+
+                groups_without_fac.setdefault(key, []).append({
+                    "row": r,
+                    "saldo": to_number(saldo_val),
+                })
+
+            for items in groups_without_fac.values():
+                if len(items) < 2:
+                    continue
+
+                saldos = [it["saldo"] for it in items]
+                has_positive = any(saldo > 0 for saldo in saldos)
+                has_negative = any(saldo < 0 for saldo in saldos)
+
+                if has_positive and has_negative and abs(sum(saldos)) < 0.01:
+                    for it in items:
+                        anulable_rows.add(it["row"])
+
+        return anulable_rows
+
+    def detect_duplicate_rows(self, ws_original, header_row, col_map):
+        col_nombre_pac = (
+            get_col(col_map, "NOMBRE DEL PACIENTE")
+            or get_col(col_map, "NOMBRE PACIENTE")
+            or get_col(col_map, "PACIENTE")
+            or get_col(col_map, "NOMBRE")
+        )
+        col_proc = get_col(col_map, "PROCEDIMIENTO")
+        col_fecha_serv = get_col(
+            col_map,
+            "FECHA DEL SERVICIO", "FECHA SERVICIO", "FECHA_PROCED", "FECHA PROCED", "FECHA"
+        )
+        col_saldo = get_col(col_map, "SALDO")
+
+        if any(c is None for c in [col_nombre_pac, col_proc, col_fecha_serv]):
+            return {}
+
+        anulable_rows = self.detect_anulable_rows(ws_original, header_row, col_map)
+        groups = {}
+        duplicate_rows = {}
+
+        def normalize_only_date(value):
+            if value is None:
+                return ""
+            s = str(value).strip()
+            return s.split(" ")[0]
+
+        for r in range(header_row + 1, ws_original.max_row + 1):
+            if r in anulable_rows:
+                continue
+
+            nombre_pac = norm(ws_original.cell(r, col_nombre_pac).value)
+            procedimiento = norm(ws_original.cell(r, col_proc).value)
+            fecha_serv = normalize_only_date(ws_original.cell(r, col_fecha_serv).value)
+
+            if not nombre_pac or not procedimiento or not fecha_serv:
+                continue
+
+            if not self.consulta_re.search(procedimiento):
+                continue
+
+            key = (nombre_pac, procedimiento, fecha_serv)
+            groups.setdefault(key, []).append({
+                "row": r,
+                "saldo": to_number(ws_original.cell(r, col_saldo).value) if col_saldo else 0.0,
+            })
+
+        for items in groups.values():
+            if len(items) < 2:
+                continue
+
+            saldos = [it["saldo"] for it in items]
+            if (
+                any(saldo > 0 for saldo in saldos)
+                and any(saldo < 0 for saldo in saldos)
+                and abs(sum(saldos)) < 0.01
+            ):
+                continue
+
+            for it in items[1:]:
+                duplicate_rows[it["row"]] = "Consulta/interconsulta duplicada en la misma fecha del servicio"
 
         return duplicate_rows
 

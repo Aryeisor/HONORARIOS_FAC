@@ -1,4 +1,5 @@
 import re
+from datetime import date, datetime
 
 from honorarios_app.core.common import (
     get_col,
@@ -40,6 +41,114 @@ class CardiologiaRules(SpecialtyBase):
             "DIFE. HOSV Y COOSALUD",
             "OBS",
         ]
+
+    def get_extra_sheets(self):
+        return {
+            "DUPLICADOS": "RAZON DUPLICADO",
+        }
+
+    def filter_duplicate_consult_rows(
+        self,
+        pre_rows_coo,
+        pre_rows_other,
+        pedir_rows_coo,
+        pedir_rows_other,
+        base_headers,
+    ):
+        pre_col_map = {
+            norm(header): column
+            for column, header in enumerate(base_headers, start=1)
+            if norm(header)
+        }
+        col_id_pac = get_col(
+            pre_col_map,
+            "IDENTIFICACION PACIENTE",
+            "IDENTIFICACION_PACIENTE",
+            "ID PACIENTE",
+            "DOC PACIENTE",
+            "DOCUMENTO PACIENTE",
+            "IDENTIFICACION",
+        )
+        col_fecha = get_col(
+            pre_col_map,
+            "FECHA DEL SERVICIO",
+            "FECHA SERVICIO",
+            "FECHA_PROCED",
+            "FECHA PROCED",
+            "FECHA",
+        )
+        col_proc = get_col(pre_col_map, "PROCEDIMIENTO")
+        col_saldo = get_col(pre_col_map, "SALDO")
+
+        if any(c is None for c in [col_id_pac, col_fecha, col_proc, col_saldo]):
+            return (
+                list(pre_rows_coo) + list(pre_rows_other),
+                list(pedir_rows_coo) + list(pedir_rows_other),
+                [],
+            )
+
+        idx_id_pac = col_id_pac - 1
+        idx_fecha = col_fecha - 1
+        idx_proc = col_proc - 1
+        idx_saldo = col_saldo - 1
+
+        def date_key(value):
+            if isinstance(value, datetime):
+                return value.date().isoformat()
+            if isinstance(value, date):
+                return value.isoformat()
+            if value is None:
+                return ""
+            return str(value).strip().split("T", 1)[0].split(" ", 1)[0]
+
+        pre_rows = list(pre_rows_coo) + list(pre_rows_other)
+        pedir_rows = list(pedir_rows_coo) + list(pedir_rows_other)
+        if len(pre_rows) != len(pedir_rows):
+            raise ValueError("Las filas PRE y PEDIR FACT no estan sincronizadas")
+
+        groups = {}
+        for row_index, row in enumerate(pre_rows):
+            procedimiento = norm(row[idx_proc])
+            if not (
+                self.consulta_re.search(procedimiento)
+                or self.cuidados_re.search(procedimiento)
+            ):
+                continue
+
+            paciente = normalize_fac(row[idx_id_pac])
+            fecha = date_key(row[idx_fecha])
+            if not paciente or not fecha:
+                continue
+
+            groups.setdefault((paciente, fecha), []).append(row_index)
+
+        duplicate_indexes = set()
+        for row_indexes in groups.values():
+            if len(row_indexes) < 2:
+                continue
+            row_to_keep = max(
+                row_indexes,
+                key=lambda row_index: to_number(pre_rows[row_index][idx_saldo]),
+            )
+            duplicate_indexes.update(
+                row_index for row_index in row_indexes if row_index != row_to_keep
+            )
+
+        reason = "CONSULTA DUPLICADA MISMO PACIENTE Y FECHA"
+        final_rows = [
+            row for row_index, row in enumerate(pre_rows)
+            if row_index not in duplicate_indexes
+        ]
+        final_pedir_rows = [
+            row for row_index, row in enumerate(pedir_rows)
+            if row_index not in duplicate_indexes
+        ]
+        duplicate_rows = [
+            pre_rows[row_index][:len(base_headers)] + [reason]
+            for row_index in range(len(pre_rows))
+            if row_index in duplicate_indexes
+        ]
+        return final_rows, final_pedir_rows, duplicate_rows
 
     def detect_anulable_rows(self, ws_original, header_row, col_map):
         col_no_fac = get_col(col_map, "NO FAC", "NUM FAC", "N° FAC", "FACTURA")
@@ -84,6 +193,39 @@ class CardiologiaRules(SpecialtyBase):
 
                 # Anulado correcto: mismo NO FAC + paciente + procedimiento
                 # y neto saldo = 0
+                if abs(saldo_sum) < 0.01:
+                    for it in items:
+                        anulable_rows.add(it["row"])
+
+            # Excepcion: la anulacion puede haberse registrado con otra factura.
+            # Solo participan filas que no fueron anuladas por la regla principal.
+            groups_without_fac = {}
+            for r in range(header_row + 1, ws_original.max_row + 1):
+                if r in anulable_rows:
+                    continue
+
+                proc_val = ws_original.cell(r, col_proc).value
+                id_pac_val = ws_original.cell(r, col_id_pac).value
+                saldo_val = ws_original.cell(r, col_saldo).value
+
+                key = (
+                    normalize_fac(id_pac_val),
+                    norm(proc_val),
+                )
+
+                if not all(key):
+                    continue
+
+                groups_without_fac.setdefault(key, []).append({
+                    "row": r,
+                    "saldo": to_number(saldo_val),
+                })
+
+            for items in groups_without_fac.values():
+                if len(items) < 2:
+                    continue
+
+                saldo_sum = sum(it["saldo"] for it in items)
                 if abs(saldo_sum) < 0.01:
                     for it in items:
                         anulable_rows.add(it["row"])

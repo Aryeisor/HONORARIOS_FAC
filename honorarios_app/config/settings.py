@@ -12,7 +12,7 @@ DEFAULT_SETTINGS = {
         "consulta_pct": 0.90,
         "procedimiento_pct": 0.36
     },
-    "gastroenterologia": {
+    "fonoaudiologia": {
         "payment_pct": 0.70
     },
 }
@@ -50,6 +50,9 @@ def load_settings():
             data = json.load(f)
     except Exception:
         data = DEFAULT_SETTINGS.copy()
+
+    # La especialidad retirada no debe sobrevivir en configuraciones antiguas.
+    data.pop("gastroenterologia", None)
 
     for key, value in DEFAULT_SETTINGS.items():
         if key not in data:
